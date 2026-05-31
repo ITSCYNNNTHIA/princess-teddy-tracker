@@ -1,7 +1,7 @@
 'use client'
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
-import { FOOD_LIBRARY, TARGETS, calcFromLibrary } from '../lib/foods'
+import { FOOD_LIBRARY, calcFromLibrary } from '../lib/foods'
 
 const C = {
   bg: '#faf8f5', bgWarm: '#f7f4f0', card: '#ffffff', border: '#ede8e0',
@@ -13,7 +13,7 @@ const C = {
 }
 
 const TODAY = new Date().toISOString().split('T')[0]
-
+const DEFAULT_TARGETS = { calories: 1600, protein: 120, carbs: 165, fat: 52 }
 const DEFAULT_MEALS = [
   { id: 'm1', name: 'Breakfast', time: '7:30 – 8:00 am', emoji: '☀️', items: [] },
   { id: 'm2', name: 'Lunch', time: '1:00 pm', emoji: '🍃', items: [] },
@@ -21,7 +21,7 @@ const DEFAULT_MEALS = [
   { id: 'm4', name: 'Dinner', time: '8:00 pm', emoji: '🌙', items: [] },
 ]
 
-// ── Dual Arc ─────────────────────────────────────────────────────────────────
+// ── Dual Arc ──────────────────────────────────────────────────────────────────
 function DualArc({ planned, actual, target, color, label }) {
   const size = 68, outerR = 28, innerR = 19
   const circ = r => 2 * Math.PI * r
@@ -45,6 +45,116 @@ function DualArc({ planned, actual, target, color, label }) {
         </div>
       </div>
       <span style={{ fontSize: 9, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>{label}</span>
+    </div>
+  )
+}
+
+// ── Targets Editor Modal ───────────────────────────────────────────────────────
+function TargetsModal({ targets, onSave, onClose }) {
+  const [form, setForm] = useState({ ...targets })
+  const set = (k, v) => setForm(f => ({ ...f, [k]: parseFloat(v) || 0 }))
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: '#2a242077', zIndex: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background: C.white, borderRadius: 24, padding: '28px 24px', width: '100%', maxWidth: 380, border: `1px solid ${C.border}`, boxShadow: '0 20px 60px #2a242020' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+          <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 22, color: C.text, fontWeight: 700 }}>Daily Targets</span>
+          <button onClick={onClose} style={{ background: C.cream, border: 'none', color: C.textMuted, width: 28, height: 28, borderRadius: 8, cursor: 'pointer' }}>✕</button>
+        </div>
+        <p style={{ fontSize: 11, color: C.textMuted, marginBottom: 20, lineHeight: 1.6 }}>Adjust your daily macro targets. These are used for the planned ring on the dashboard.</p>
+        {[
+          { label: 'Calories (kcal)', key: 'calories', color: C.warm },
+          { label: 'Protein (g)', key: 'protein', color: C.protein },
+          { label: 'Carbs (g)', key: 'carbs', color: C.carbs },
+          { label: 'Fat (g)', key: 'fat', color: C.fat },
+        ].map(f => (
+          <div key={f.key} style={{ marginBottom: 14 }}>
+            <label style={{ fontSize: 10, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 1, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 5 }}>
+              <div style={{ width: 8, height: 8, borderRadius: '50%', background: f.color }} />
+              {f.label}
+            </label>
+            <input type="number" value={form[f.key]} onChange={e => set(f.key, e.target.value)}
+              style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: `1px solid ${C.border}`, background: C.bgWarm, color: C.text, fontSize: 16, fontFamily: 'inherit', boxSizing: 'border-box' }} />
+          </div>
+        ))}
+        <button onClick={() => onSave(form)} style={{ width: '100%', marginTop: 8, padding: '13px', borderRadius: 12, border: 'none', background: C.accent, color: C.white, fontSize: 14, cursor: 'pointer', fontWeight: 600 }}>Save Targets</button>
+      </div>
+    </div>
+  )
+}
+
+// ── Import from Chat Modal ─────────────────────────────────────────────────────
+function ImportModal({ onImport, onClose }) {
+  const [text, setText] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const handle = async () => {
+    if (!text.trim()) return
+    setLoading(true); setError('')
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'anthropic-dangerous-direct-browser-access': 'true' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 1500,
+          messages: [{
+            role: 'user',
+            content: `Parse this meal plan text and return ONLY valid JSON, no markdown, no explanation:
+{
+  "meals": [
+    {
+      "id": "m1",
+      "name": "Breakfast",
+      "time": "7:30 am",
+      "emoji": "☀️",
+      "items": [
+        { "name": "food name", "amount": "150", "unit": "g", "calories": 93, "protein": 13, "carbs": 9, "fat": 0 }
+      ]
+    }
+  ]
+}
+Rules:
+- amount must be a number string (no units in the amount field, put units in the unit field separately)
+- Use emojis: ☀️ breakfast, 🍃 lunch, 🫖 snack, 🌙 dinner, 🥗 other
+- Estimate macros from food + amount if not explicitly given
+- id should be m1, m2, m3 etc
+
+Meal plan text to parse:
+${text}`
+          }]
+        })
+      })
+      const data = await res.json()
+      const raw = data.content?.map(i => i.text || '').join('') || ''
+      const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim())
+      onImport(parsed.meals)
+    } catch (e) {
+      setError('Could not parse — try pasting the meal summary from your Claude chat.')
+    }
+    setLoading(false)
+  }
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: '#2a242077', zIndex: 300, display: 'flex', alignItems: 'flex-end' }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background: C.white, borderRadius: '22px 22px 0 0', padding: '22px 22px 40px', width: '100%', maxWidth: 480, margin: '0 auto', border: `1px solid ${C.border}`, boxShadow: '0 -8px 40px #2a242015' }}>
+        <div style={{ width: 32, height: 3, background: C.cream, borderRadius: 2, margin: '0 auto 20px' }} />
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 21, color: C.text, fontWeight: 700 }}>Import from Chat</span>
+          <button onClick={onClose} style={{ background: C.cream, border: 'none', color: C.textMuted, width: 28, height: 28, borderRadius: 8, cursor: 'pointer' }}>✕</button>
+        </div>
+        <p style={{ fontSize: 12, color: C.textMuted, marginBottom: 16, lineHeight: 1.7 }}>
+          Paste your meal plan from your Claude conversation — it will auto-parse all foods, amounts and macros for you.
+        </p>
+        <textarea value={text} onChange={e => setText(e.target.value)}
+          placeholder="e.g. Breakfast: 150g Greek yogurt, 1 banana, 1 egg, 80g berries, 15g honey. Lunch: 80g protein pasta, 229g chicken breast..."
+          style={{ width: '100%', height: 140, background: C.bgWarm, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, color: C.text, fontSize: 13, resize: 'none', fontFamily: 'inherit', lineHeight: 1.6, boxSizing: 'border-box' }} />
+        {error && <p style={{ fontSize: 12, color: '#c97d6e', marginTop: 8 }}>{error}</p>}
+        <button onClick={handle} disabled={loading || !text.trim()}
+          style={{ width: '100%', marginTop: 14, padding: '14px', borderRadius: 12, border: 'none', background: loading || !text.trim() ? C.cream : C.accent, color: loading || !text.trim() ? C.textMuted : C.white, fontWeight: 600, fontSize: 14, cursor: loading || !text.trim() ? 'not-allowed' : 'pointer', transition: 'all 0.2s' }}>
+          {loading ? 'Parsing your meals...' : 'Import Meal Plan'}
+        </button>
+      </div>
     </div>
   )
 }
@@ -93,7 +203,7 @@ function FoodPickerModal({ initial, onSave, onDelete, onClose, isEdit }) {
               <div style={{ maxHeight: 200, overflowY: 'auto', borderRadius: 12, border: `1px solid ${C.border}`, marginBottom: 12 }}>
                 {filtered.map((f, i) => (
                   <div key={i} onClick={() => { setSelected(f); setQuery(f.name); setAmount(String(f.per)) }}
-                    style={{ padding: '10px 14px', cursor: 'pointer', fontSize: 13, color: C.text, borderBottom: i < filtered.length - 1 ? `1px solid ${C.borderLight}` : 'none', display: 'flex', justifyContent: 'space-between' }}>
+                    style={{ padding: '10px 14px', cursor: 'pointer', fontSize: 13, color: C.text, borderBottom: i < filtered.length - 1 ? `1px solid ${C.borderLight}` : 'none', display: 'flex', justifyContent: 'space-between', background: C.white }}>
                     <span>{f.name}</span><span style={{ fontSize: 10, color: C.textMuted }}>per {f.per}{f.unit}</span>
                   </div>
                 ))}
@@ -207,7 +317,7 @@ function MealCard({ meal, checkedItems, onToggle, onUpdateMeal }) {
 
       {editIdx !== null && meal.items[editIdx] && (
         <FoodPickerModal initial={meal.items[editIdx]} isEdit={true} onClose={() => setEditIdx(null)}
-          onSave={updated => { onUpdateMeal({ ...meal, items: meal.items.map((it, i) => i === editIdx ? updated : it) }); setEditIdx(null) }}
+          onSave={u => { onUpdateMeal({ ...meal, items: meal.items.map((it, i) => i === editIdx ? u : it) }); setEditIdx(null) }}
           onDelete={() => { onUpdateMeal({ ...meal, items: meal.items.filter((_, i) => i !== editIdx) }); setEditIdx(null) }} />
       )}
       {adding && <FoodPickerModal initial={null} isEdit={false} onClose={() => setAdding(false)} onSave={item => { onUpdateMeal({ ...meal, items: [...meal.items, item] }); setAdding(false) }} />}
@@ -270,78 +380,69 @@ export default function Tracker({ session }) {
   const [tab, setTab] = useState('today')
   const [meals, setMeals] = useState(DEFAULT_MEALS)
   const [checked, setChecked] = useState({})
+  const [targets, setTargets] = useState(DEFAULT_TARGETS)
   const [history, setHistory] = useState([])
   const [loaded, setLoaded] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [showImport, setShowImport] = useState(false)
+  const [showTargets, setShowTargets] = useState(false)
   const userId = session.user.id
 
-  // Load today's data + history from Supabase
   useEffect(() => {
     const load = async () => {
-      // Load today
       const { data: todayData } = await supabase
-        .from('daily_logs')
-        .select('*')
-        .eq('user_id', userId)
-        .eq('date', TODAY)
-        .single()
-
+        .from('daily_logs').select('*').eq('user_id', userId).eq('date', TODAY).single()
       if (todayData) {
         setMeals(todayData.meals || DEFAULT_MEALS)
         setChecked(todayData.checked || {})
       }
 
-      // Load history
-      const { data: histData } = await supabase
-        .from('daily_logs')
-        .select('*')
-        .eq('user_id', userId)
-        .neq('date', TODAY)
-        .order('date', { ascending: false })
-        .limit(30)
+      const { data: profileData } = await supabase
+        .from('user_profiles').select('targets').eq('user_id', userId).single()
+      if (profileData?.targets) setTargets(profileData.targets)
 
+      const { data: histData } = await supabase
+        .from('daily_logs').select('*').eq('user_id', userId).neq('date', TODAY)
+        .order('date', { ascending: false }).limit(30)
       if (histData) setHistory(histData)
       setLoaded(true)
     }
     load()
   }, [userId])
 
-  // Auto-save to Supabase whenever meals or checked changes
-  const save = useCallback(async (newMeals, newChecked) => {
-    await supabase.from('daily_logs').upsert({
-      user_id: userId,
-      date: TODAY,
-      meals: newMeals,
-      checked: newChecked,
-      updated_at: new Date().toISOString(),
-    }, { onConflict: 'user_id,date' })
+  const persist = useCallback(async (newMeals, newChecked) => {
+    await supabase.from('daily_logs').upsert(
+      { user_id: userId, date: TODAY, meals: newMeals, checked: newChecked, updated_at: new Date().toISOString() },
+      { onConflict: 'user_id,date' }
+    )
   }, [userId])
 
-  const updateMeals = (newMeals) => {
-    setMeals(newMeals)
-    save(newMeals, checked)
-  }
+  const updateMeals = (newMeals) => { setMeals(newMeals); persist(newMeals, checked) }
+  const updateChecked = (newChecked) => { setChecked(newChecked); persist(meals, newChecked) }
+  const updateMeal = (updatedMeal) => updateMeals(meals.map(m => m.id === updatedMeal.id ? updatedMeal : m))
 
-  const updateChecked = (newChecked) => {
-    setChecked(newChecked)
-    save(meals, newChecked)
-  }
-
-  const updateMeal = (updatedMeal) => {
-    const newMeals = meals.map(m => m.id === updatedMeal.id ? updatedMeal : m)
-    updateMeals(newMeals)
+  const saveTargets = async (newTargets) => {
+    setTargets(newTargets)
+    setShowTargets(false)
+    await supabase.from('user_profiles').upsert(
+      { user_id: userId, targets: newTargets, updated_at: new Date().toISOString() },
+      { onConflict: 'user_id' }
+    )
   }
 
   const saveToJournal = async () => {
     setSaving(true)
-    await supabase.from('daily_logs').upsert({
-      user_id: userId, date: TODAY, meals, checked, updated_at: new Date().toISOString()
-    }, { onConflict: 'user_id,date' })
-    // Reload history
+    await persist(meals, checked)
     const { data } = await supabase.from('daily_logs').select('*').eq('user_id', userId).neq('date', TODAY).order('date', { ascending: false }).limit(30)
     if (data) setHistory(data)
     setSaving(false)
     alert('Saved to your journal ✓')
+  }
+
+  const handleImport = (importedMeals) => {
+    updateMeals(importedMeals)
+    setShowImport(false)
+    setTab('today')
   }
 
   const addMeal = () => {
@@ -359,13 +460,14 @@ export default function Tracker({ session }) {
 
   const allItems = meals.flatMap(m => m.items)
   const planned = allItems.reduce((a, i) => ({ cal: a.cal + (i.calories || 0), p: a.p + (i.protein || 0), c: a.c + (i.carbs || 0), f: a.f + (i.fat || 0) }), { cal: 0, p: 0, c: 0, f: 0 })
-  const actual = meals.flatMap((m, _) => m.items.filter((_, idx) => checked[`${m.id}-${idx}`])).reduce((a, i) => ({ cal: a.cal + (i.calories || 0), p: a.p + (i.protein || 0), c: a.c + (i.carbs || 0), f: a.f + (i.fat || 0) }), { cal: 0, p: 0, c: 0, f: 0 })
-  const calPct = Math.min((actual.cal / TARGETS.calories) * 100, 100)
+  const actual = meals.flatMap(m => m.items.filter((_, idx) => checked[`${m.id}-${idx}`])).reduce((a, i) => ({ cal: a.cal + (i.calories || 0), p: a.p + (i.protein || 0), c: a.c + (i.carbs || 0), f: a.f + (i.fat || 0) }), { cal: 0, p: 0, c: 0, f: 0 })
+  const calPct = Math.min((actual.cal / targets.calories) * 100, 100)
   const totalItems = allItems.length
   const totalChecked = meals.reduce((acc, m) => acc + m.items.filter((_, idx) => checked[`${m.id}-${idx}`]).length, 0)
 
   return (
     <div style={{ background: C.bg, minHeight: '100vh', maxWidth: 480, margin: '0 auto', fontFamily: "'DM Sans', sans-serif", color: C.text }}>
+
       {/* Header */}
       <div style={{ background: 'linear-gradient(170deg, #f5f0e8 0%, #ede8de 40%, #f0ebe2 100%)', padding: '44px 22px 28px', position: 'relative', overflow: 'hidden' }}>
         <div style={{ position: 'absolute', top: -60, right: -40, width: 200, height: 200, borderRadius: '60% 40% 55% 45%', background: '#ffffff40' }} />
@@ -389,7 +491,7 @@ export default function Tracker({ session }) {
                 <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
                   <span style={{ fontSize: 15, fontWeight: 700, color: C.text, lineHeight: 1 }}>{Math.round(actual.cal)}</span>
                   <span style={{ fontSize: 8, color: C.textMuted, marginTop: 1 }}>eaten</span>
-                  <span style={{ fontSize: 8, color: C.warm, fontWeight: 600 }}>/{TARGETS.calories}</span>
+                  <span style={{ fontSize: 8, color: C.warm, fontWeight: 600 }}>/{targets.calories}</span>
                 </div>
               </div>
               <button onClick={signOut} style={{ background: 'none', border: `1px solid ${C.creamDark}`, color: C.textMuted, padding: '4px 10px', borderRadius: 8, fontSize: 10, cursor: 'pointer' }}>sign out</button>
@@ -405,24 +507,27 @@ export default function Tracker({ session }) {
 
           {/* Dual macro rings */}
           <div style={{ background: '#ffffff70', borderRadius: 18, padding: '14px 8px 10px', border: `1px solid ${C.border}`, backdropFilter: 'blur(12px)' }}>
-            <div style={{ display: 'flex', justifyContent: 'center', gap: 18, marginBottom: 10 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                <div style={{ width: 16, height: 3, borderRadius: 2, background: C.warm, opacity: 0.35 }} />
-                <span style={{ fontSize: 9, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>Planned</span>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, padding: '0 4px' }}>
+              <div style={{ display: 'flex', gap: 14 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                  <div style={{ width: 16, height: 3, borderRadius: 2, background: C.warm, opacity: 0.35 }} />
+                  <span style={{ fontSize: 9, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>Planned</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                  <div style={{ width: 16, height: 3, borderRadius: 2, background: C.warm }} />
+                  <span style={{ fontSize: 9, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>Eaten</span>
+                </div>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                <div style={{ width: 16, height: 3, borderRadius: 2, background: C.warm }} />
-                <span style={{ fontSize: 9, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>Eaten</span>
-              </div>
+              <button onClick={() => setShowTargets(true)} style={{ background: C.warmPale, border: `1px solid ${C.creamDark}`, color: C.textMid, padding: '3px 10px', borderRadius: 8, fontSize: 10, cursor: 'pointer', fontWeight: 500 }}>✏️ Edit targets</button>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-around' }}>
-              <DualArc label="Protein" planned={planned.p} actual={actual.p} target={TARGETS.protein} color={C.protein} />
+              <DualArc label="Protein" planned={planned.p} actual={actual.p} target={targets.protein} color={C.protein} />
               <div style={{ width: 1, background: C.borderLight, margin: '6px 0' }} />
-              <DualArc label="Carbs" planned={planned.c} actual={actual.c} target={TARGETS.carbs} color={C.carbs} />
+              <DualArc label="Carbs" planned={planned.c} actual={actual.c} target={targets.carbs} color={C.carbs} />
               <div style={{ width: 1, background: C.borderLight, margin: '6px 0' }} />
-              <DualArc label="Fat" planned={planned.f} actual={actual.f} target={TARGETS.fat} color={C.fat} />
+              <DualArc label="Fat" planned={planned.f} actual={actual.f} target={targets.fat} color={C.fat} />
               <div style={{ width: 1, background: C.borderLight, margin: '6px 0' }} />
-              <DualArc label="Cals" planned={planned.cal} actual={actual.cal} target={TARGETS.calories} color={C.warm} />
+              <DualArc label="Cals" planned={planned.cal} actual={actual.cal} target={targets.calories} color={C.warm} />
             </div>
             <div style={{ textAlign: 'center', marginTop: 8 }}>
               <span style={{ fontSize: 9, color: C.textDim }}>inner = eaten · outer = planned · number = eaten / planned</span>
@@ -449,15 +554,21 @@ export default function Tracker({ session }) {
                 onUpdateMeal={updateMeal} />
             ))}
             <button onClick={addMeal} style={{ width: '100%', padding: '11px', borderRadius: 16, marginBottom: 10, border: `1.5px dashed ${C.creamDark}`, background: 'transparent', color: C.textMuted, fontSize: 13, cursor: 'pointer' }}>+ Add meal</button>
-            <button onClick={saveToJournal} disabled={saving} style={{ width: '100%', padding: '13px', borderRadius: 12, border: 'none', background: saving ? C.cream : C.accent, color: saving ? C.textMuted : C.white, fontSize: 13, cursor: 'pointer', fontWeight: 600 }}>
-              {saving ? 'Saving...' : 'Save to Journal'}
-            </button>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button onClick={() => setShowImport(true)} style={{ flex: 1, padding: '12px', borderRadius: 12, border: `1px solid ${C.border}`, background: C.white, color: C.textMid, fontSize: 13, cursor: 'pointer', fontWeight: 500 }}>✨ Import from Chat</button>
+              <button onClick={saveToJournal} disabled={saving} style={{ flex: 1, padding: '12px', borderRadius: 12, border: 'none', background: saving ? C.cream : C.accent, color: saving ? C.textMuted : C.white, fontSize: 13, cursor: 'pointer', fontWeight: 600 }}>
+                {saving ? 'Saving...' : 'Save to Journal'}
+              </button>
+            </div>
           </>
         )}
         {tab === 'history' && (
           <HistoryView history={history} onLoad={entry => { setMeals(entry.meals || DEFAULT_MEALS); setChecked(entry.checked || {}); setTab('today') }} />
         )}
       </div>
+
+      {showImport && <ImportModal onImport={handleImport} onClose={() => setShowImport(false)} />}
+      {showTargets && <TargetsModal targets={targets} onSave={saveTargets} onClose={() => setShowTargets(false)} />}
     </div>
   )
 }
