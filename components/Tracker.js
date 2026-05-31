@@ -92,42 +92,14 @@ function ImportModal({ onImport, onClose }) {
     if (!text.trim()) return
     setLoading(true); setError('')
     try {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
+      const res = await fetch('/api/parse-meal', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'anthropic-dangerous-direct-browser-access': 'true' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 1500,
-          messages: [{
-            role: 'user',
-            content: `Parse this meal plan text and return ONLY valid JSON, no markdown, no explanation:
-{
-  "meals": [
-    {
-      "id": "m1",
-      "name": "Breakfast",
-      "time": "7:30 am",
-      "emoji": "☀️",
-      "items": [
-        { "name": "food name", "amount": "150", "unit": "g", "calories": 93, "protein": 13, "carbs": 9, "fat": 0 }
-      ]
-    }
-  ]
-}
-Rules:
-- amount must be a number string (no units in the amount field, put units in the unit field separately)
-- Use emojis: ☀️ breakfast, 🍃 lunch, 🫖 snack, 🌙 dinner, 🥗 other
-- Estimate macros from food + amount if not explicitly given
-- id should be m1, m2, m3 etc
-
-Meal plan text to parse:
-${text}`
-          }]
-        })
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text })
       })
-      const data = await res.json()
-      const raw = data.content?.map(i => i.text || '').join('') || ''
-      const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim())
+      if (!res.ok) throw new Error('Server error')
+      const parsed = await res.json()
+      if (parsed.error) throw new Error(parsed.error)
       onImport(parsed.meals)
     } catch (e) {
       setError('Could not parse — try pasting the meal summary from your Claude chat.')
